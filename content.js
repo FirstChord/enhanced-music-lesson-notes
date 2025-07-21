@@ -190,6 +190,72 @@ async function createRecorderUI() {
                                                font-size: 14px; width: 100%;">Next Question →</button>
             </div>
             
+            <!-- Visual Recording Indicator -->
+            <div id="recordingIndicator" style="display: flex; align-items: center; justify-content: center; 
+                                                gap: 10px; margin: 15px 0; padding: 8px; border-radius: 6px;
+                                                background: #f8f9fa; border: 1px solid #e9ecef;">
+                <div id="micIcon" style="width: 30px; height: 30px; position: relative;">
+                    <div id="micDot" style="width: 12px; height: 12px; background: #ccc; 
+                                           border-radius: 50%; position: absolute; top: 50%; 
+                                           left: 50%; transform: translate(-50%, -50%);
+                                           transition: all 0.3s ease;"></div>
+                    <div id="micRing" style="width: 30px; height: 30px; border: 2px solid #ccc;
+                                           border-radius: 50%; position: absolute; top: 0; left: 0;
+                                           opacity: 0;"></div>
+                </div>
+                <span id="micStatus" style="font-size: 12px; color: #666; font-weight: 500;">Ready to record</span>
+            </div>
+            
+            <style>
+                @keyframes pulse {
+                    0% {
+                        transform: translate(-50%, -50%) scale(1);
+                        opacity: 1;
+                    }
+                    50% {
+                        transform: translate(-50%, -50%) scale(1.2);
+                        opacity: 0.8;
+                    }
+                    100% {
+                        transform: translate(-50%, -50%) scale(1);
+                        opacity: 1;
+                    }
+                }
+
+                @keyframes ringPulse {
+                    0% {
+                        transform: scale(0.8);
+                        opacity: 0.8;
+                    }
+                    100% {
+                        transform: scale(1.5);
+                        opacity: 0;
+                    }
+                }
+
+                .recording #micDot {
+                    background: #4CAF50 !important;
+                    animation: pulse 1.5s ease-in-out infinite;
+                }
+
+                .recording #micRing {
+                    border-color: #4CAF50 !important;
+                    animation: ringPulse 1.5s ease-out infinite;
+                    opacity: 1 !important;
+                }
+                
+                .error #micDot {
+                    background: #f44336 !important;
+                    animation: none;
+                }
+                
+                .error #micRing {
+                    border-color: #f44336 !important;
+                    animation: none;
+                    opacity: 0.3 !important;
+                }
+            </style>
+            
             <!-- Status Display -->
             <div id="recorderStatus" style="padding: 8px; border-radius: 4px; font-size: 12px; 
                                            background: #cce7ff; color: #004085; margin-bottom: 10px;">
@@ -399,6 +465,18 @@ function setupSpeechRecognitionHandlers() {
         const status = document.getElementById('recorderStatus');
         const liveTranscript = document.getElementById('liveTranscript');
         
+        // Update visual recording indicator
+        const recordingIndicator = document.getElementById('recordingIndicator');
+        const micStatus = document.getElementById('micStatus');
+        if (recordingIndicator) {
+            recordingIndicator.classList.add('recording');
+            recordingIndicator.classList.remove('error');
+        }
+        if (micStatus) {
+            micStatus.textContent = 'Recording...';
+            micStatus.style.color = '#4CAF50';
+        }
+        
         if (startBtn) startBtn.disabled = true;
         if (stopBtn) stopBtn.disabled = false;
         if (liveTranscript) liveTranscript.style.display = 'block';
@@ -485,6 +563,18 @@ function setupSpeechRecognitionHandlers() {
         
         isRecording = false;
         
+        // Update visual recording indicator
+        const recordingIndicator = document.getElementById('recordingIndicator');
+        const micStatus = document.getElementById('micStatus');
+        if (recordingIndicator) {
+            recordingIndicator.classList.remove('recording');
+            recordingIndicator.classList.remove('error');
+        }
+        if (micStatus) {
+            micStatus.textContent = 'Ready to record';
+            micStatus.style.color = '#666';
+        }
+        
         const startBtn = document.getElementById('startRecording');
         const stopBtn = document.getElementById('stopRecording');
         const liveTranscript = document.getElementById('liveTranscript');
@@ -515,6 +605,18 @@ function setupSpeechRecognitionHandlers() {
             errorMsg = 'Microphone access denied. Please allow microphone access and try again.';
         } else if (event.error === 'no-speech') {
             errorMsg = 'No speech detected. Please speak more clearly and try again.';
+        }
+        
+        // Update visual recording indicator for error state
+        const recordingIndicator = document.getElementById('recordingIndicator');
+        const micStatus = document.getElementById('micStatus');
+        if (recordingIndicator) {
+            recordingIndicator.classList.remove('recording');
+            recordingIndicator.classList.add('error');
+        }
+        if (micStatus) {
+            micStatus.textContent = 'Error - Check microphone';
+            micStatus.style.color = '#f44336';
         }
         
         const status = document.getElementById('recorderStatus');

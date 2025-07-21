@@ -65,7 +65,7 @@ class LessonNotesManager {
         console.log('🚀 Starting enhanced page recording via content script...');
         
         try {
-            this.showStatus('Injecting content script...', 'info');
+            this.showStatus('Connecting to content script...', 'info');
             
             const tabId = await this.getCurrentTabId();
             
@@ -74,17 +74,6 @@ class LessonNotesManager {
                 target: { tabId },
                 files: ['textProcessor.js']
             });
-            
-            // Then inject the content script to ensure it's available
-            await chrome.scripting.executeScript({
-                target: { tabId },
-                files: ['content.js']
-            });
-            
-            this.showStatus('Connecting to content script...', 'info');
-            
-            // Give a small delay to ensure content script is ready
-            await new Promise(resolve => setTimeout(resolve, 100));
             
             // Send message to content script to start recording
             const response = await chrome.tabs.sendMessage(tabId, {
@@ -95,12 +84,6 @@ class LessonNotesManager {
             if (response && response.success) {
                 this.showStatus('Recording started successfully!', 'success');
                 console.log('✅ Recording started via content script');
-                
-                // Auto-close the popup after successful start
-                setTimeout(() => {
-                    window.close();
-                }, 500);
-                
             } else {
                 throw new Error(response?.error || 'Failed to start recording');
             }
@@ -110,7 +93,7 @@ class LessonNotesManager {
             this.showStatus(`Error: ${error.message}`, 'error');
             
             if (error.message.includes('Could not establish connection')) {
-                this.showStatus('Content script injection failed. Please ensure you\'re on a valid webpage and try again.', 'error');
+                this.showStatus('Content script not loaded. Please refresh the page and try again.', 'error');
             }
         }
     }

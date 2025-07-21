@@ -6,11 +6,10 @@
   "permissions": [
     "storage",
     "activeTab",
-    "scripting",
-    "microphone"
+    "scripting"
   ],
   "host_permissions": [
-    "*://*/*"
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"

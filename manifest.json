@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Music Lesson Notes Assistant", 
+  "version": "1.0.0",
+  "description": "Convert lesson notes to structured format for music teachers",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "microphone"
+  ],
+  "host_permissions": [
+    "*://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Create Lesson Notes"
+  }
+}

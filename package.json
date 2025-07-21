@@ -1,0 +1,35 @@
+{
+  "name": "enhanced-music-lesson-notes",
+  "version": "1.0.0",
+  "description": "Chrome extension for recording and formatting professional music lesson notes using speech recognition and AI enhancement",
+  "main": "popup.js",
+  "scripts": {
+    "setup": "./setup.sh",
+    "lint": "echo 'No linting configured yet'",
+    "test": "echo 'No tests configured yet'"
+  },
+  "keywords": [
+    "chrome-extension",
+    "music",
+    "education",
+    "speech-recognition",
+    "lesson-notes",
+    "teaching",
+    "ai-enhancement"
+  ],
+  "author": "Finn Lemarinel",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FirstChord/enhanced-music-lesson-notes.git"
+  },
+  "bugs": {
+    "url": "https://github.com/FirstChord/enhanced-music-lesson-notes/issues"
+  },
+  "homepage": "https://github.com/FirstChord/enhanced-music-lesson-notes#readme",
+  "engines": {
+    "chrome": ">=88.0"
+  },
+  "devDependencies": {},
+  "dependencies": {}
+}

@@ -1046,14 +1046,23 @@ function handleNextQuestion() {
         // Give speech recognition time to finalize any "Live:" text
         setTimeout(() => {
             // Save current question's answer (now should include any finalized text)
-            const currentAnswer = currentQuestionTranscript.trim();
+            let currentAnswer = currentQuestionTranscript.trim();
+            
+            // If no current question transcript, try using the global finalTranscript
+            if (!currentAnswer && finalTranscript.trim()) {
+                console.log('⚠️ Using finalTranscript as fallback for current question');
+                currentAnswer = finalTranscript.trim();
+            }
+            
             console.log(`🔍 Processing question ${currentQuestionIndex}, transcript: "${currentAnswer}"`);
+            console.log(`🔍 currentQuestionTranscript: "${currentQuestionTranscript}"`);
+            console.log(`🔍 finalTranscript: "${finalTranscript}"`);
             
             if (currentAnswer) {
                 questionAnswers[currentQuestionIndex] = currentAnswer;
                 console.log(`💾 Saved answer for question ${currentQuestionIndex}:`, currentAnswer);
             } else {
-                console.log(`⚠️ No answer for question ${currentQuestionIndex}, currentQuestionTranscript was: "${currentQuestionTranscript}"`);
+                console.log(`⚠️ No answer for question ${currentQuestionIndex}, both transcripts were empty`);
             }
             
             // Move to next question
@@ -1067,8 +1076,9 @@ function handleNextQuestion() {
                 updateCurrentQuestion();
                 
                 // Clear current question transcript for fresh start
-                console.log(`🧹 Clearing transcript for next question. Previous: "${currentQuestionTranscript}"`);
+                console.log(`🧹 Clearing transcripts for next question. Previous currentQuestionTranscript: "${currentQuestionTranscript}"`);
                 currentQuestionTranscript = '';
+                finalTranscript = ''; // Also clear global transcript to prevent bleed-over
                 
                 // Clear live transcript display
                 const liveDiv = document.getElementById('liveTranscript');
@@ -1113,7 +1123,7 @@ function handleNextQuestion() {
                     console.log('⚠️ ASR client not found or not recording when trying to stop');
                 }
             }
-        }, 1500); // 1.5 second delay for speech processing
+        }, 3000); // 3 second delay to ensure OpenAI processing completes
         
     } catch (error) {
         console.error('❌ Failed to handle next question:', error);

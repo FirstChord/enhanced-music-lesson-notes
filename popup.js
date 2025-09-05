@@ -103,6 +103,7 @@ class LessonNotesManager {
             
             // Get current ASR mode
             const asrMode = await this.getASRMode();
+            console.log('🔍 Using ASR mode for recording:', asrMode);
             
             // Send message to content script to start recording
             const response = await chrome.tabs.sendMessage(tabId, {
@@ -258,6 +259,9 @@ class LessonNotesManager {
         try {
             await chrome.storage.sync.set({ asrMode: mode });
             console.log('✅ Saved ASR mode:', mode);
+            
+            // Update UI to show current selection
+            this.showStatus(`ASR mode set to: ${mode === 'cloud' ? '☁️ Cloud' : '🖥️ Browser'}`, 'info');
         } catch (error) {
             console.error('❌ Failed to save ASR mode:', error);
         }

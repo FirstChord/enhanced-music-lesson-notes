@@ -330,6 +330,9 @@ async function handleStartRecording(config = {}) {
         // Set ASR mode from config
         if (config.asrMode) {
             asrMode = config.asrMode;
+            console.log('🔍 Content script received ASR mode:', asrMode);
+        } else {
+            console.log('⚠️ No ASR mode provided, using default:', asrMode);
         }
         
         // Create the recorder UI

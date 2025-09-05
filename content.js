@@ -17,7 +17,7 @@ let currentMode = 'question';
 let currentQuestionIndex = 0;
 let questionAnswers = {};
 let currentQuestionTranscript = '';
-let asrMode = 'browser'; // Temporarily force browser mode for testing
+let asrMode = 'cloud';
 
 const questions = [
     "What did we do in the lesson?",
@@ -291,7 +291,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     try {
         switch (request.action) {
             case 'startRecording':
-                handleStartRecording(request.config)
+                handleStartRecording(request)
                     .then(() => sendResponse({ success: true }))
                     .catch(error => sendResponse({ success: false, error: error.message }));
                 return true; // Keep message channel open for async response
@@ -342,9 +342,9 @@ async function handleStartRecording(config = {}) {
         initializeASRClient();
         
         // Apply configuration
-        if (config.mode) {
-            currentMode = config.mode;
-            updateModeUI();
+        if (config.template) {
+            // Could set different modes based on template in the future
+            console.log('📝 Using template:', config.template);
         }
         
         // Send confirmation to popup
@@ -1095,6 +1095,10 @@ function handleNextQuestion() {
                 
                 // Compile results and stop recording
                 compileQuestionResults();
+                
+                // Process and send results to popup
+                console.log('📤 Processing results for popup display');
+                processRecordingResults();
                 
                 if (currentASRClient && isRecording) {
                     console.log('🛑 Stopping ASR client after final question');

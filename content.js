@@ -1,10 +1,10 @@
 // Enhanced Music Lesson Notes Extension - Content Script
-// Handles speech recognition and UI injection
+// Handles speech recognition and UI injection with ASR abstraction
 
 console.log('🎵 Enhanced Lesson Notes content script loaded on:', window.location.href);
 
 // Global variables for speech recognition
-let recognition = null;
+let currentASRClient = null;
 let isRecording = false;
 let finalTranscript = '';
 let rawText = '';
@@ -17,12 +17,272 @@ let currentMode = 'question';
 let currentQuestionIndex = 0;
 let questionAnswers = {};
 let currentQuestionTranscript = '';
+let asrMode = 'cloud';
 
 const questions = [
     "What did we do in the lesson?",
     "What went well or what was challenging?",
     "What would be good to practice for next week?"
 ];
+
+// ASR Client Abstraction
+
+class ASRClient {
+    constructor() {
+        this.partialCallback = null;
+        this.finalCallback = null;
+    }
+    
+    start() { throw new Error('start() must be implemented'); }
+    stop() { throw new Error('stop() must be implemented'); }
+    
+    onPartial(callback) {
+        this.partialCallback = callback;
+    }
+    
+    onFinal(callback) {
+        this.finalCallback = callback;
+    }
+}
+
+// Cloud-based ASR using WebSocket relay to OpenAI Realtime
+class CloudRealtimeASRClient extends ASRClient {
+    constructor() {
+        super();
+        this.websocket = null;
+        this.audioContext = null;
+        this.mediaStream = null;
+        this.audioWorklet = null;
+        this.isConnected = false;
+        this.connectionTimeout = null;
+    }
+    
+    async start() {
+        try {
+            // Get relay URL from manifest or use placeholder
+            const RELAY_WSS_URL = 'wss://YOUR-RELAY.example.com/realtime';
+            
+            // Start audio capture
+            this.mediaStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    sampleRate: 16000,
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true
+                }
+            });
+            
+            // Create AudioContext for processing
+            this.audioContext = new AudioContext({ sampleRate: 16000 });
+            const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+            
+            // Connect to relay WebSocket
+            this.websocket = new WebSocket(RELAY_WSS_URL);
+            
+            // Set connection timeout
+            this.connectionTimeout = setTimeout(() => {
+                if (!this.isConnected) {
+                    throw new Error('Connection timeout - relay unreachable');
+                }
+            }, 2000);
+            
+            this.websocket.onopen = () => {
+                console.log('✅ Connected to ASR relay');
+                this.isConnected = true;
+                
+                if (this.connectionTimeout) {
+                    clearTimeout(this.connectionTimeout);
+                    this.connectionTimeout = null;
+                }
+                
+                // Send start message
+                this.websocket.send(JSON.stringify({
+                    type: 'start',
+                    sampleRate: 16000,
+                    turn: currentMode === 'question' ? 'tutor' : 'student'
+                }));
+                
+                // Start audio processing
+                this.setupAudioProcessing(source);
+            };
+            
+            this.websocket.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    
+                    if (message.type === 'partial' && this.partialCallback) {
+                        this.partialCallback(message.text);
+                    } else if (message.type === 'final' && this.finalCallback) {
+                        this.finalCallback(message.text);
+                    } else if (message.type === 'error') {
+                        throw new Error(message.message);
+                    }
+                } catch (error) {
+                    console.error('Error processing message:', error);
+                }
+            };
+            
+            this.websocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                throw new Error('WebSocket connection error');
+            };
+            
+            this.websocket.onclose = () => {
+                console.log('WebSocket closed');
+                this.cleanup();
+            };
+            
+        } catch (error) {
+            console.error('Failed to start cloud ASR:', error);
+            this.cleanup();
+            throw error;
+        }
+    }
+    
+    setupAudioProcessing(source) {
+        // Create a ScriptProcessorNode for audio processing
+        const processor = this.audioContext.createScriptProcessor(1024, 1, 1);
+        
+        processor.onaudioprocess = (event) => {
+            if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            
+            const inputBuffer = event.inputBuffer.getChannelData(0);
+            
+            // Convert float32 to int16 PCM
+            const pcmBuffer = new Int16Array(inputBuffer.length);
+            for (let i = 0; i < inputBuffer.length; i++) {
+                pcmBuffer[i] = Math.max(-32768, Math.min(32767, inputBuffer[i] * 32767));
+            }
+            
+            // Send binary audio data
+            this.websocket.send(pcmBuffer.buffer);
+        };
+        
+        source.connect(processor);
+        processor.connect(this.audioContext.destination);
+        this.audioWorklet = processor;
+    }
+    
+    stop() {
+        if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+            this.websocket.close();
+        }
+        this.cleanup();
+    }
+    
+    cleanup() {
+        if (this.audioWorklet) {
+            this.audioWorklet.disconnect();
+            this.audioWorklet = null;
+        }
+        
+        if (this.audioContext) {
+            this.audioContext.close();
+            this.audioContext = null;
+        }
+        
+        if (this.mediaStream) {
+            this.mediaStream.getTracks().forEach(track => track.stop());
+            this.mediaStream = null;
+        }
+        
+        if (this.connectionTimeout) {
+            clearTimeout(this.connectionTimeout);
+            this.connectionTimeout = null;
+        }
+        
+        this.isConnected = false;
+        this.websocket = null;
+    }
+}
+
+// Browser-based ASR using existing webkitSpeechRecognition
+class BrowserASRClient extends ASRClient {
+    constructor() {
+        super();
+        this.recognition = null;
+        this.lastResultIndex = 0;
+    }
+    
+    start() {
+        return new Promise((resolve, reject) => {
+            try {
+                // Check for speech recognition support
+                if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+                    reject(new Error('Speech recognition not supported in this browser'));
+                    return;
+                }
+                
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                this.recognition = new SpeechRecognition();
+                
+                // Configure recognition
+                this.recognition.continuous = true;
+                this.recognition.interimResults = true;
+                this.recognition.lang = 'en-US';
+                
+                this.recognition.onstart = () => {
+                    console.log('✅ Browser ASR started');
+                    resolve();
+                };
+                
+                this.recognition.onresult = (event) => {
+                    let interim = '';
+                    
+                    // Process new results
+                    for (let i = this.lastResultIndex; i < event.results.length; i++) {
+                        const result = event.results[i];
+                        const transcript = result[0].transcript;
+                        
+                        if (result.isFinal) {
+                            if (this.finalCallback) {
+                                this.finalCallback(transcript);
+                            }
+                            this.lastResultIndex = i + 1;
+                        } else {
+                            interim += transcript;
+                        }
+                    }
+                    
+                    if (interim && this.partialCallback) {
+                        this.partialCallback(interim);
+                    }
+                };
+                
+                this.recognition.onerror = (event) => {
+                    console.error('Browser ASR error:', event.error);
+                    let errorMsg = 'Error: ' + event.error;
+                    if (event.error === 'not-allowed') {
+                        errorMsg = 'Microphone access denied';
+                    } else if (event.error === 'no-speech') {
+                        errorMsg = 'No speech detected';
+                    }
+                    reject(new Error(errorMsg));
+                };
+                
+                this.recognition.onend = () => {
+                    console.log('Browser ASR ended');
+                };
+                
+                this.lastResultIndex = 0;
+                this.recognition.start();
+                
+            } catch (error) {
+                reject(error);
+            }
+        });
+    }
+    
+    stop() {
+        if (this.recognition) {
+            this.recognition.stop();
+            this.recognition = null;
+        }
+        this.lastResultIndex = 0;
+    }
+}
 
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -67,11 +327,16 @@ async function handleStartRecording(config = {}) {
         const existing = document.getElementById('lesson-notes-recorder');
         if (existing) existing.remove();
         
+        // Set ASR mode from config
+        if (config.asrMode) {
+            asrMode = config.asrMode;
+        }
+        
         // Create the recorder UI
         await createRecorderUI();
         
-        // Initialize speech recognition
-        initializeSpeechRecognition();
+        // Initialize ASR client
+        initializeASRClient();
         
         // Apply configuration
         if (config.mode) {
@@ -82,10 +347,10 @@ async function handleStartRecording(config = {}) {
         // Send confirmation to popup
         chrome.runtime.sendMessage({ 
             action: 'recordingReady',
-            data: { mode: currentMode }
+            data: { mode: currentMode, asrMode: asrMode }
         });
         
-        console.log('✅ Recording setup complete');
+        console.log('✅ Recording setup complete with ASR mode:', asrMode);
         
     } catch (error) {
         console.error('❌ Failed to start recording:', error);
@@ -142,14 +407,14 @@ async function createRecorderUI() {
     container.innerHTML = `
         <div style="position: fixed; ${position} z-index: 10000; background: white; 
                     border: 2px solid #4CAF50; border-radius: 10px; padding: 20px; 
-                    box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: Arial, sans-serif; 
+                    box-shadow: 0 4px 20px rgba(0,0,0,0.15); font-family: 'Inter', Arial, sans-serif; 
                     max-width: 420px; max-height: 80vh; overflow-y: auto;">
             
             <button id="closeRecorder" style="position: absolute; top: 10px; right: 10px; 
                                              background: #666; color: white; border: none; 
                                              padding: 5px 10px; border-radius: 4px; cursor: pointer;">✕</button>
             
-            <div style="font-weight: bold; margin-bottom: 15px; color: #333;">🎵 Enhanced Lesson Notes</div>
+            <div style="font-weight: 600; margin-bottom: 15px; color: #333; text-align: center; font-family: 'Inter', Arial, sans-serif;">Enhanced Lesson Notes</div>
             
             <!-- Recording Mode Selection -->
             <div style="margin-bottom: 15px; display: flex; gap: 10px;">
@@ -159,7 +424,7 @@ async function createRecorderUI() {
                     📝 Free Flow
                 </button>
                 <button id="questionMode" style="flex: 1; padding: 8px; border: 2px solid #4CAF50; 
-                                              background: #4CAF50; color: white; border-radius: 4px; 
+                                              background: #3E8D58; color: white; border-radius: 4px; 
                                               cursor: pointer; font-size: 12px;">
                     ❓ Question Mode
                 </button>
@@ -169,8 +434,8 @@ async function createRecorderUI() {
             <div id="questionDisplay" style="display: block; margin-bottom: 15px; padding: 10px; 
                                            background: #f0f8ff; border-radius: 6px; 
                                            border: 1px solid #4CAF50;">
-                <div style="font-size: 11px; color: #666; margin-bottom: 5px;">Current Question:</div>
-                <div id="currentQuestion" style="font-size: 14px; font-weight: bold; color: #333;">
+                <div style="font-size: 11px; color: #666; margin-bottom: 5px; text-align: center; font-family: 'Inter', Arial, sans-serif;">Current Question:</div>
+                <div id="currentQuestion" style="font-size: 14px; font-weight: 600; color: #333; text-align: center; font-family: 'Inter', Arial, sans-serif;">
                     What did we do in the lesson?
                 </div>
             </div>
@@ -178,10 +443,10 @@ async function createRecorderUI() {
             <!-- Recording Controls -->
             <div style="margin-bottom: 15px;">
                 <div style="display: flex; gap: 5px; margin-bottom: 10px;">
-                    <button id="startRecording" style="background: #4CAF50; color: white; border: none; 
+                    <button id="startRecording" style="background: #3E8D58; color: white; border: none; 
                                                      padding: 10px 20px; border-radius: 6px; cursor: pointer; 
                                                      font-size: 14px; flex: 1;">🎤 Start</button>
-                    <button id="stopRecording" disabled style="background: #f44336; color: white; border: none; 
+                    <button id="stopRecording" disabled style="background: #F17E6A; color: white; border: none; 
                                                               padding: 10px 20px; border-radius: 6px; cursor: pointer; 
                                                               font-size: 14px; flex: 1;">⏹️ Stop</button>
                 </div>
@@ -234,7 +499,7 @@ async function createRecorderUI() {
                 }
 
                 .recording #micDot {
-                    background: #4CAF50 !important;
+                    background: #3E8D58 !important;
                     animation: pulse 1.5s ease-in-out infinite;
                 }
 
@@ -245,12 +510,12 @@ async function createRecorderUI() {
                 }
                 
                 .error #micDot {
-                    background: #f44336 !important;
+                    background: #F17E6A !important;
                     animation: none;
                 }
                 
                 .error #micRing {
-                    border-color: #f44336 !important;
+                    border-color: #F17E6A !important;
                     animation: none;
                     opacity: 0.3 !important;
                 }
@@ -270,7 +535,7 @@ async function createRecorderUI() {
             
             <!-- Results Section -->
             <div id="resultsSection" style="display: none;">
-                <div style="font-weight: bold; margin-bottom: 10px; color: #333;">📝 Professional Notes:</div>
+                <div style="font-weight: 600; margin-bottom: 10px; color: #333; text-align: center; font-family: 'Inter', Arial, sans-serif;">Professional Notes:</div>
                 
                 <div id="resultsOutput" style="padding: 10px; border-radius: 4px; font-size: 12px; 
                                               background: #f8f9fa; border: 1px solid #ddd; max-height: 200px; 
@@ -368,7 +633,7 @@ function updateModeUI() {
         const nextQuestionBtn = document.getElementById('nextQuestion');
         
         if (currentMode === 'freeflow') {
-            freeFlowBtn.style.background = '#4CAF50';
+            freeFlowBtn.style.background = '#3E8D58';
             freeFlowBtn.style.color = 'white';
             freeFlowBtn.style.border = '2px solid #4CAF50';
             
@@ -379,7 +644,7 @@ function updateModeUI() {
             questionDisplay.style.display = 'none';
             nextQuestionBtn.style.display = 'none';
         } else {
-            questionBtn.style.background = '#4CAF50';
+            questionBtn.style.background = '#3E49A0';
             questionBtn.style.color = 'white';
             questionBtn.style.border = '2px solid #4CAF50';
             
@@ -413,67 +678,99 @@ function updateCurrentQuestion() {
 // Continue with speech recognition functions...
 
 /**
- * Initialize speech recognition
+ * Initialize ASR client based on selected mode
  */
-function initializeSpeechRecognition() {
+function initializeASRClient() {
     try {
-        // Check for speech recognition support
-        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-            const status = document.getElementById('recorderStatus');
-            if (status) {
-                status.innerHTML = '❌ Speech recognition not supported';
-            }
-            const startBtn = document.getElementById('startRecording');
-            if (startBtn) {
-                startBtn.disabled = true;
-            }
-            return false;
+        if (asrMode === 'cloud') {
+            currentASRClient = new CloudRealtimeASRClient();
+            console.log('✅ Initialized Cloud Realtime ASR client');
+        } else {
+            currentASRClient = new BrowserASRClient();
+            console.log('✅ Initialized Browser ASR client');
         }
         
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognition = new SpeechRecognition();
+        // Set up callbacks
+        currentASRClient.onPartial((text) => {
+            handlePartialTranscript(text);
+        });
         
-        // Configure recognition
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = 'en-US';
+        currentASRClient.onFinal((text) => {
+            handleFinalTranscript(text);
+        });
         
-        // Set up event handlers
-        setupSpeechRecognitionHandlers();
-        
-        console.log('✅ Speech recognition initialized');
         return true;
         
     } catch (error) {
-        console.error('❌ Failed to initialize speech recognition:', error);
+        console.error('❌ Failed to initialize ASR client:', error);
+        const status = document.getElementById('recorderStatus');
+        if (status) {
+            status.innerHTML = '❌ ASR initialization failed: ' + error.message;
+        }
         return false;
     }
 }
 
 /**
- * Set up speech recognition event handlers
+ * Handle partial transcript from ASR
  */
-function setupSpeechRecognitionHandlers() {
-    if (!recognition) return;
+function handlePartialTranscript(text) {
+    // Update timing
+    window.lastSpeechTime = Date.now();
     
-    recognition.onstart = () => {
-        console.log('🎤 Speech recognition started');
-        isRecording = true;
-        
-        const startBtn = document.getElementById('startRecording');
-        const stopBtn = document.getElementById('stopRecording');
-        const status = document.getElementById('recorderStatus');
-        const liveTranscript = document.getElementById('liveTranscript');
-        
+    // Update live transcript display
+    updateLiveTranscript(text);
+}
+
+/**
+ * Handle final transcript from ASR
+ */
+function handleFinalTranscript(text) {
+    let newText = text.trim();
+    
+    // Capitalize first word
+    if (!finalTranscript.trim()) {
+        newText = newText.charAt(0).toUpperCase() + newText.slice(1);
+    } else if (finalTranscript.trim().endsWith('.')) {
+        newText = newText.charAt(0).toUpperCase() + newText.slice(1);
+    }
+    
+    finalTranscript += newText + ' ';
+    
+    // Add to current question transcript in question mode
+    if (currentMode === 'question') {
+        if (!currentQuestionTranscript.trim()) {
+            newText = newText.charAt(0).toUpperCase() + newText.slice(1);
+        }
+        currentQuestionTranscript += newText + ' ';
+    }
+    
+    // Update timing
+    window.lastSpeechTime = Date.now();
+    
+    // Update live transcript display
+    updateLiveTranscript('');
+}
+
+/**
+ * Update recording UI state
+ */
+function updateRecordingUI(recording) {
+    const startBtn = document.getElementById('startRecording');
+    const stopBtn = document.getElementById('stopRecording');
+    const status = document.getElementById('recorderStatus');
+    const liveTranscript = document.getElementById('liveTranscript');
+    const recordingIndicator = document.getElementById('recordingIndicator');
+    const micStatus = document.getElementById('micStatus');
+    
+    if (recording) {
         // Update visual recording indicator
-        const recordingIndicator = document.getElementById('recordingIndicator');
-        const micStatus = document.getElementById('micStatus');
         if (recordingIndicator) {
             recordingIndicator.classList.add('recording');
             recordingIndicator.classList.remove('error');
         }
         if (micStatus) {
-            micStatus.textContent = 'Recording...';
+            micStatus.textContent = `Recording... (${asrMode === 'cloud' ? '☁️ Cloud' : '🖥️ Browser'} ASR)`;
             micStatus.style.color = '#4CAF50';
         }
         
@@ -498,74 +795,8 @@ function setupSpeechRecognitionHandlers() {
         
         if (status) status.style.background = '#cce7ff';
         
-        // Initialize timing and reset variables
-        window.lastSpeechTime = Date.now();
-        lastResultIndex = 0;
-        lastTranscriptLength = 0;
-        
-        // Start pause detection
-        startPauseDetection();
-    };
-    
-    recognition.onresult = (event) => {
-        let interim = '';
-        
-        // Process new results
-        for (let i = lastResultIndex; i < event.results.length; i++) {
-            const result = event.results[i];
-            const transcript = result[0].transcript;
-            
-            if (result.isFinal) {
-                let newText = transcript.trim();
-                
-                // Capitalize first word
-                if (!finalTranscript.trim()) {
-                    newText = newText.charAt(0).toUpperCase() + newText.slice(1);
-                } else if (finalTranscript.trim().endsWith('.')) {
-                    newText = newText.charAt(0).toUpperCase() + newText.slice(1);
-                }
-                
-                finalTranscript += newText + ' ';
-                
-                // Add to current question transcript in question mode
-                if (currentMode === 'question') {
-                    if (!currentQuestionTranscript.trim()) {
-                        newText = newText.charAt(0).toUpperCase() + newText.slice(1);
-                    }
-                    currentQuestionTranscript += newText + ' ';
-                }
-                
-                lastResultIndex = i + 1;
-            } else {
-                interim += transcript;
-            }
-        }
-        
-        // Update timing
-        const currentLength = finalTranscript.length + interim.length;
-        if (currentLength > lastTranscriptLength) {
-            window.lastSpeechTime = Date.now();
-            lastTranscriptLength = currentLength;
-        }
-        
-        // Update live transcript display
-        updateLiveTranscript(interim);
-    };
-    
-    recognition.onend = () => {
-        console.log('🎤 Speech recognition ended');
-        
-        // Cleanup
-        if (pauseCheckInterval) {
-            clearInterval(pauseCheckInterval);
-            pauseCheckInterval = null;
-        }
-        
-        isRecording = false;
-        
+    } else {
         // Update visual recording indicator
-        const recordingIndicator = document.getElementById('recordingIndicator');
-        const micStatus = document.getElementById('micStatus');
         if (recordingIndicator) {
             recordingIndicator.classList.remove('recording');
             recordingIndicator.classList.remove('error');
@@ -575,67 +806,55 @@ function setupSpeechRecognitionHandlers() {
             micStatus.style.color = '#666';
         }
         
-        const startBtn = document.getElementById('startRecording');
-        const stopBtn = document.getElementById('stopRecording');
-        const liveTranscript = document.getElementById('liveTranscript');
+        if (startBtn) startBtn.disabled = false;
+        if (stopBtn) stopBtn.disabled = true;
+        if (liveTranscript) liveTranscript.style.display = 'none';
+        
         const nextQuestionBtn = document.getElementById('nextQuestion');
-        
-        if (startBtn) startBtn.disabled = false;
-        if (stopBtn) stopBtn.disabled = true;
-        if (liveTranscript) liveTranscript.style.display = 'none';
         if (nextQuestionBtn) nextQuestionBtn.style.display = 'none';
-        
-        // Process results if we have transcript
-        if (finalTranscript.trim()) {
-            processRecordingResults();
-        } else {
-            const status = document.getElementById('recorderStatus');
-            if (status) {
-                status.innerHTML = '❌ No speech detected. Please try again.';
-                status.style.background = '#f8d7da';
-            }
-        }
-    };
-    
-    recognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
-        
-        let errorMsg = 'Error: ' + event.error;
-        if (event.error === 'not-allowed') {
-            errorMsg = 'Microphone access denied. Please allow microphone access and try again.';
-        } else if (event.error === 'no-speech') {
-            errorMsg = 'No speech detected. Please speak more clearly and try again.';
-        }
-        
-        // Update visual recording indicator for error state
-        const recordingIndicator = document.getElementById('recordingIndicator');
-        const micStatus = document.getElementById('micStatus');
-        if (recordingIndicator) {
-            recordingIndicator.classList.remove('recording');
-            recordingIndicator.classList.add('error');
-        }
-        if (micStatus) {
-            micStatus.textContent = 'Error - Check microphone';
-            micStatus.style.color = '#f44336';
-        }
-        
-        const status = document.getElementById('recorderStatus');
-        if (status) {
-            status.innerHTML = errorMsg;
-            status.style.background = '#f8d7da';
-        }
-        
-        // Reset UI state
-        isRecording = false;
-        const startBtn = document.getElementById('startRecording');
-        const stopBtn = document.getElementById('stopRecording');
-        const liveTranscript = document.getElementById('liveTranscript');
-        
-        if (startBtn) startBtn.disabled = false;
-        if (stopBtn) stopBtn.disabled = true;
-        if (liveTranscript) liveTranscript.style.display = 'none';
-    };
+    }
 }
+
+/**
+ * Show fallback banner when cloud ASR fails
+ */
+function showFallbackBanner() {
+    // Check if banner already exists
+    let banner = document.getElementById('fallback-banner');
+    if (banner) return;
+    
+    // Create fallback banner
+    banner = document.createElement('div');
+    banner.id = 'fallback-banner';
+    banner.style.cssText = `
+        position: fixed;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 10001;
+        background: #fff3cd;
+        color: #856404;
+        border: 1px solid #ffeaa7;
+        border-radius: 6px;
+        padding: 10px 15px;
+        font-size: 12px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        max-width: 400px;
+        text-align: center;
+    `;
+    banner.innerHTML = '☁️ Cloud ASR unavailable — falling back to browser speech recognition';
+    
+    document.body.appendChild(banner);
+    
+    // Auto-remove banner after 5 seconds
+    setTimeout(() => {
+        if (banner && banner.parentNode) {
+            banner.parentNode.removeChild(banner);
+        }
+    }, 5000);
+}
+
+// Old speech recognition handlers removed - now using ASR client abstraction
 
 /**
  * Start pause detection for automatic period insertion
@@ -645,11 +864,20 @@ function startPauseDetection() {
         const currentTime = Date.now();
         const timeSinceLastSpeech = currentTime - window.lastSpeechTime;
         
-        if (timeSinceLastSpeech > 1500 && finalTranscript.trim()) {
+        if (timeSinceLastSpeech > 1300 && finalTranscript.trim()) {
             if (!/[.!?]$/.test(finalTranscript.trim())) {
                 finalTranscript = finalTranscript.trim() + '. ';
                 console.log('Added period due to pause');
                 updateLiveTranscript('');
+            }
+            
+            // Also handle currentQuestionTranscript in question mode
+            if (currentMode === 'question' && currentQuestionTranscript.trim()) {
+                if (!/[.!?]$/.test(currentQuestionTranscript.trim())) {
+                    currentQuestionTranscript = currentQuestionTranscript.trim() + '. ';
+                    console.log('Added period to current question answer due to pause');
+                    updateLiveTranscript('');
+                }
             }
         }
     }, 200);
@@ -672,23 +900,84 @@ function updateLiveTranscript(interim) {
 }
 
 /**
- * Start speech recognition
+ * Start ASR recording with fallback logic
  */
-function startSpeechRecognition() {
+async function startSpeechRecognition() {
     try {
-        if (!recognition) {
-            if (!initializeSpeechRecognition()) {
+        if (!currentASRClient) {
+            if (!initializeASRClient()) {
                 return;
             }
         }
         
         if (!isRecording) {
+            isRecording = true;
             finalTranscript = '';
-            recognition.start();
+            
+            // Show recording state immediately
+            updateRecordingUI(true);
+            
+            try {
+                // Try to start ASR client
+                await currentASRClient.start();
+                console.log('✅ ASR started successfully');
+                
+                // Initialize timing and reset variables
+                window.lastSpeechTime = Date.now();
+                lastResultIndex = 0;
+                lastTranscriptLength = 0;
+                
+                // Start pause detection
+                startPauseDetection();
+                
+            } catch (error) {
+                console.error('❌ ASR failed:', error);
+                
+                // If cloud ASR fails, try fallback to browser ASR
+                if (asrMode === 'cloud') {
+                    console.log('☁️ Cloud ASR failed, attempting browser fallback...');
+                    showFallbackBanner();
+                    
+                    // Switch to browser ASR
+                    asrMode = 'browser';
+                    currentASRClient = new BrowserASRClient();
+                    
+                    // Set up callbacks for fallback client
+                    currentASRClient.onPartial((text) => {
+                        handlePartialTranscript(text);
+                    });
+                    
+                    currentASRClient.onFinal((text) => {
+                        handleFinalTranscript(text);
+                    });
+                    
+                    try {
+                        await currentASRClient.start();
+                        console.log('✅ Fallback to browser ASR successful');
+                        
+                        // Initialize timing and reset variables
+                        window.lastSpeechTime = Date.now();
+                        lastResultIndex = 0;
+                        lastTranscriptLength = 0;
+                        
+                        // Start pause detection
+                        startPauseDetection();
+                        
+                    } catch (fallbackError) {
+                        console.error('❌ Browser ASR fallback also failed:', fallbackError);
+                        throw fallbackError;
+                    }
+                } else {
+                    throw error;
+                }
+            }
         }
         
     } catch (error) {
-        console.error('❌ Failed to start speech recognition:', error);
+        console.error('❌ Failed to start ASR:', error);
+        isRecording = false;
+        updateRecordingUI(false);
+        
         const status = document.getElementById('recorderStatus');
         if (status) {
             status.innerHTML = 'Failed to start recording: ' + error.message;
@@ -698,15 +987,41 @@ function startSpeechRecognition() {
 }
 
 /**
- * Stop speech recognition
+ * Stop ASR recording
  */
 function stopSpeechRecognition() {
     try {
-        if (recognition && isRecording) {
-            recognition.stop();
+        if (currentASRClient && isRecording) {
+            currentASRClient.stop();
+            console.log('✅ ASR stopped');
         }
+        
+        // Cleanup
+        if (pauseCheckInterval) {
+            clearInterval(pauseCheckInterval);
+            pauseCheckInterval = null;
+        }
+        
+        isRecording = false;
+        updateRecordingUI(false);
+        
+        // Process results if we have transcript
+        if (finalTranscript.trim()) {
+            setTimeout(() => {
+                processRecordingResults();
+            }, 500); // Brief delay to ensure final processing
+        } else {
+            const status = document.getElementById('recorderStatus');
+            if (status) {
+                status.innerHTML = '❌ No speech detected. Please try again.';
+                status.style.background = '#f8d7da';
+            }
+        }
+        
     } catch (error) {
-        console.error('❌ Failed to stop speech recognition:', error);
+        console.error('❌ Failed to stop ASR:', error);
+        isRecording = false;
+        updateRecordingUI(false);
     }
 }
 
@@ -715,57 +1030,85 @@ function stopSpeechRecognition() {
  */
 function handleNextQuestion() {
     try {
-        // Save current question's answer
-        if (currentQuestionTranscript.trim()) {
-            questionAnswers[currentQuestionIndex] = currentQuestionTranscript.trim();
+        const nextQuestionBtn = document.getElementById('nextQuestion');
+        
+        // Show processing state and disable button
+        if (nextQuestionBtn) {
+            nextQuestionBtn.disabled = true;
+            nextQuestionBtn.textContent = '⏳ Processing...';
+            nextQuestionBtn.style.background = '#666';
+            console.log('🔄 Button set to processing state');
         }
         
-        // Move to next question
-        currentQuestionIndex++;
-        
-        if (currentQuestionIndex < questions.length) {
-            // Show next question
-            updateCurrentQuestion();
-            
-            // Clear current question transcript
-            currentQuestionTranscript = '';
-            
-            // Clear live transcript display
-            const liveDiv = document.getElementById('liveTranscript');
-            if (liveDiv) {
-                liveDiv.innerHTML = '<strong>Live:</strong> <br><strong>Current Answer:</strong> ';
+        // Give speech recognition time to finalize any "Live:" text
+        setTimeout(() => {
+            // Save current question's answer (now should include any finalized text)
+            const currentAnswer = currentQuestionTranscript.trim();
+            if (currentAnswer) {
+                questionAnswers[currentQuestionIndex] = currentAnswer;
+                console.log(`💾 Saved answer for question ${currentQuestionIndex}:`, currentAnswer);
             }
             
-            // Update status and button
-            const status = document.getElementById('recorderStatus');
-            const nextQuestionBtn = document.getElementById('nextQuestion');
+            // Move to next question
+            currentQuestionIndex++;
+            console.log(`🔢 Moved to question index: ${currentQuestionIndex}, total questions: ${questions.length}`);
             
-            if (status) {
-                status.innerHTML = `🎤 Recording: ${questions[currentQuestionIndex]}`;
+            if (currentQuestionIndex < questions.length) {
+                console.log(`✅ Showing question ${currentQuestionIndex + 1} of ${questions.length}`);
+                // Show next question
+                updateCurrentQuestion();
+                
+                // Clear current question transcript for fresh start
+                currentQuestionTranscript = '';
+                
+                // Clear live transcript display
+                const liveDiv = document.getElementById('liveTranscript');
+                if (liveDiv) {
+                    liveDiv.innerHTML = '<strong>Live:</strong> <br><strong>Current Answer:</strong> ';
+                }
+                
+                // Update status and button
+                const status = document.getElementById('recorderStatus');
+                
+                if (status) {
+                    status.innerHTML = `🎤 Recording: ${questions[currentQuestionIndex]}`;
+                }
+                
+                // Re-enable button with next question text
+                if (nextQuestionBtn) {
+                    nextQuestionBtn.disabled = false;
+                    nextQuestionBtn.style.background = '#007cba';
+                    nextQuestionBtn.textContent = currentQuestionIndex === questions.length - 1 ? 'Finish →' : 'Next Question →';
+                    console.log('✅ Button re-enabled for next question');
+                }
+            } else {
+                console.log(`🏁 Finished all questions. Current index: ${currentQuestionIndex}, Questions length: ${questions.length}`);
+                // Save final answer
+                const finalAnswer = currentQuestionTranscript.trim() || finalTranscript.trim();
+                if (finalAnswer) {
+                    questionAnswers[currentQuestionIndex] = finalAnswer;
+                    console.log(`💾 Saved final answer:`, finalAnswer);
+                }
+                
+                // Compile results and stop recording
+                compileQuestionResults();
+                
+                if (recognition && isRecording) {
+                    recognition.stop();
+                }
             }
-            
-            if (nextQuestionBtn) {
-                nextQuestionBtn.style.display = 'inline-block';
-                nextQuestionBtn.textContent = currentQuestionIndex === questions.length - 1 ? 'Finish →' : 'Next Question →';
-            }
-        } else {
-            // Save final answer
-            if (currentQuestionTranscript.trim()) {
-                questionAnswers[currentQuestionIndex] = currentQuestionTranscript.trim();
-            } else if (finalTranscript.trim()) {
-                questionAnswers[currentQuestionIndex] = finalTranscript.trim();
-            }
-            
-            // Compile results and stop recording
-            compileQuestionResults();
-            
-            if (recognition && isRecording) {
-                recognition.stop();
-            }
-        }
+        }, 1500); // 1.5 second delay for speech processing
         
     } catch (error) {
         console.error('❌ Failed to handle next question:', error);
+        
+        // Reset button state on error
+        const nextQuestionBtn = document.getElementById('nextQuestion');
+        if (nextQuestionBtn) {
+            nextQuestionBtn.disabled = false;
+            nextQuestionBtn.style.background = '#007cba';
+            nextQuestionBtn.textContent = 'Next Question →';
+        }
     }
 }
 
@@ -784,20 +1127,26 @@ function compileQuestionResults() {
                     .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
                     .join(' ');
                 
-                // Add spacing before each question (except the first)
-                if (compiledText.length > 0) {
-                    compiledText += '\n\n';
+                // Add question header and answer
+                compiledText += `[${titleCase}]\n`;
+                compiledText += questionAnswers[i].trim();
+                
+                // Add double spacing between all questions (like the working version)
+                if (i < questions.length - 1) {
+                    compiledText += '\n\n\n';
+                } else {
+                    compiledText += '\n';
                 }
                 
-                // Add question header and answer
-                compiledText += `[${titleCase}]
-`;
-                compiledText += questionAnswers[i].trim() + '\n';
+                console.log(`📝 Added question ${i + 1}: ${titleCase}`);
+                console.log(`📝 Current compiled text length: ${compiledText.length}`);
             }
         }
         
-        console.log('Compiled text:', compiledText);
-        finalTranscript = compiledText.trim();
+        console.log('📝 Final compiled text:');
+        console.log(JSON.stringify(compiledText)); // This will show exact characters including \n
+        console.log('📝 Compiled text preview:', compiledText);
+        finalTranscript = compiledText;
         
         // Reset question state
         const questionDisplay = document.getElementById('questionDisplay');
@@ -825,26 +1174,35 @@ async function processRecordingResults() {
             status.style.background = '#fff3cd';
         }
         
-        // Store raw text
-        rawText = finalTranscript.trim();
+        // Store raw text - don't trim at all to preserve spacing structure
+        rawText = finalTranscript;
+        console.log('📝 Raw text before enhancement:', JSON.stringify(rawText));
         
-        // Apply text enhancement if available
-        if (window.enhancedCleanupSpeechText) {
-            const result = window.enhancedCleanupSpeechText(rawText, { template: 'general' });
-            enhancedText = result.text;
-            
-            // Show enhancement info
-            const enhancementInfo = document.getElementById('enhancementInfo');
-            const enhancementSummary = document.getElementById('enhancementSummary');
-            
-            if (enhancementInfo && enhancementSummary) {
-                enhancementSummary.textContent = result.enhancements || 'Professional formatting applied';
-                enhancementInfo.style.display = 'block';
-            }
-        } else {
-            // Fallback if text processor not available
+        // For question mode, skip text enhancement to preserve formatting
+        if (currentMode === 'question') {
             enhancedText = rawText;
+            console.log('📝 Skipping text enhancement for question mode to preserve formatting');
+        } else {
+            // Apply text enhancement if available for free flow mode
+            if (window.enhancedCleanupSpeechText) {
+                const result = window.enhancedCleanupSpeechText(rawText, { template: 'general' });
+                enhancedText = result.text;
+                
+                // Show enhancement info
+                const enhancementInfo = document.getElementById('enhancementInfo');
+                const enhancementSummary = document.getElementById('enhancementSummary');
+                
+                if (enhancementInfo && enhancementSummary) {
+                    enhancementSummary.textContent = result.enhancements || 'Professional formatting applied';
+                    enhancementInfo.style.display = 'block';
+                }
+            } else {
+                // Fallback if text processor not available
+                enhancedText = rawText;
+            }
         }
+        
+        console.log('📝 Enhanced text after processing:', JSON.stringify(enhancedText));
         
         // Store results globally and update display
         window.recordingResults = { 

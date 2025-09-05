@@ -20,13 +20,19 @@ class LessonNotesManager {
     
     initializeElements() {
         this.pageRecordBtn = document.getElementById('pageRecordBtn');
+        this.tutorialBtn = document.getElementById('tutorialBtn');
         this.copyBtn = document.getElementById('copyBtn');
         this.newBtn = document.getElementById('newBtn');
         this.outputSection = document.getElementById('outputSection');
         this.outputBox = document.getElementById('outputBox');
         this.status = document.getElementById('status');
+        this.cloudASR = document.getElementById('cloudASR');
+        this.browserASR = document.getElementById('browserASR');
         
         console.log('✅ Elements initialized');
+        
+        // Load ASR mode from storage
+        this.loadASRMode();
     }
     
     async checkPermissions() {
@@ -35,7 +41,7 @@ class LessonNotesManager {
         try {
             if (typeof chrome !== 'undefined' && chrome.scripting) {
                 console.log('✅ chrome.scripting available');
-                this.showStatus('Ready to inject enhanced speech recorder', 'success');
+                // Ready - no status message needed
             } else {
                 console.log('❌ chrome.scripting not available');
                 this.showStatus('Scripting API not available', 'error');
@@ -55,8 +61,17 @@ class LessonNotesManager {
             this.startPageRecording();
         });
         
+        this.tutorialBtn.addEventListener('click', () => {
+            console.log('📹 Tutorial button clicked');
+            this.openTutorial();
+        });
+        
         this.copyBtn.addEventListener('click', () => this.copyToClipboard());
         this.newBtn.addEventListener('click', () => this.resetForNewRecording());
+        
+        // ASR mode change listeners
+        this.cloudASR.addEventListener('change', () => this.saveASRMode('cloud'));
+        this.browserASR.addEventListener('change', () => this.saveASRMode('browser'));
         
         console.log('✅ Events bound');
     }
@@ -86,10 +101,14 @@ class LessonNotesManager {
             // Give a small delay to ensure content script is ready
             await new Promise(resolve => setTimeout(resolve, 100));
             
+            // Get current ASR mode
+            const asrMode = await this.getASRMode();
+            
             // Send message to content script to start recording
             const response = await chrome.tabs.sendMessage(tabId, {
                 action: 'startRecording',
-                template: 'general'
+                template: 'general',
+                asrMode: asrMode
             });
             
             if (response && response.success) {
@@ -188,6 +207,21 @@ class LessonNotesManager {
         console.log('✅ Reset complete');
     }
     
+    openTutorial() {
+        console.log('📹 Opening tutorial...');
+        
+        // TODO: Replace with actual tutorial URL when video is ready
+        const tutorialUrl = 'https://youtu.be/YOUR_VIDEO_ID_HERE';
+        
+        // Open in a new tab
+        chrome.tabs.create({
+            url: tutorialUrl,
+            active: true
+        });
+        
+        console.log('✅ Tutorial opened in new tab');
+    }
+    
     showStatus(message, type = 'info') {
         if (!this.status) return;
         
@@ -198,6 +232,45 @@ class LessonNotesManager {
     
     hideStatus() {
         this.status.style.display = 'none';
+    }
+    
+    // ASR mode management methods
+    async loadASRMode() {
+        try {
+            const result = await chrome.storage.sync.get('asrMode');
+            const asrMode = result.asrMode || 'cloud';
+            
+            if (asrMode === 'cloud') {
+                this.cloudASR.checked = true;
+            } else {
+                this.browserASR.checked = true;
+            }
+            
+            console.log('✅ Loaded ASR mode:', asrMode);
+        } catch (error) {
+            console.error('❌ Failed to load ASR mode:', error);
+            // Default to cloud
+            this.cloudASR.checked = true;
+        }
+    }
+    
+    async saveASRMode(mode) {
+        try {
+            await chrome.storage.sync.set({ asrMode: mode });
+            console.log('✅ Saved ASR mode:', mode);
+        } catch (error) {
+            console.error('❌ Failed to save ASR mode:', error);
+        }
+    }
+    
+    async getASRMode() {
+        try {
+            const result = await chrome.storage.sync.get('asrMode');
+            return result.asrMode || 'cloud';
+        } catch (error) {
+            console.error('❌ Failed to get ASR mode:', error);
+            return 'cloud';
+        }
     }
 }
 

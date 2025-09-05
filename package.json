@@ -5,6 +5,10 @@
   "main": "popup.js",
   "scripts": {
     "setup": "./setup.sh",
+    "analyze": "node setup-analyzer.js",
+    "analyze-report": "node setup-analyzer.js --report",
+    "analyze-manual": "node manual-setup.js",
+    "analyze-examples": "node manual-setup.js --examples",
     "lint": "echo 'No linting configured yet'",
     "test": "echo 'No tests configured yet'"
   },

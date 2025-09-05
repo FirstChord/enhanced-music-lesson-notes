@@ -59,8 +59,8 @@ class CloudRealtimeASRClient extends ASRClient {
     
     async start() {
         try {
-            // Get relay URL from manifest or use placeholder
-            const RELAY_WSS_URL = 'wss://YOUR-RELAY.example.com/realtime';
+            // Get relay URL - your actual Railway deployment
+            const RELAY_WSS_URL = 'wss://enhanced-music-lesson-notes-production.up.railway.app/realtime';
             
             // Start audio capture
             this.mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -367,8 +367,8 @@ async function handleStartRecording(config = {}) {
  */
 function handleStopRecording() {
     try {
-        if (recognition && isRecording) {
-            recognition.stop();
+        if (currentASRClient && isRecording) {
+            currentASRClient.stop();
         }
         
         // Clean up

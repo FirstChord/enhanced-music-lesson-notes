@@ -22,12 +22,23 @@ const wss = new WebSocket.Server({
   server,
   path: '/realtime',
   verifyClient: (info) => {
-    // Basic origin check - allow Chrome extensions and whitelisted domains
+    // Allow Chrome extensions and common development origins
     const origin = info.origin;
-    if (origin && (origin.startsWith('chrome-extension://') || origin.includes('example.com'))) {
+    console.log('WebSocket connection attempt from origin:', origin);
+    
+    // Allow Chrome extensions, localhost, and common domains
+    if (!origin || 
+        origin.startsWith('chrome-extension://') || 
+        origin.startsWith('moz-extension://') ||
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1') ||
+        origin.includes('.app') ||
+        origin.includes('mymusicstaff.com')) {
+      console.log('✅ Origin allowed:', origin);
       return true;
     }
-    console.log('Rejected connection from origin:', origin);
+    
+    console.log('❌ Origin rejected:', origin);
     return false;
   }
 });

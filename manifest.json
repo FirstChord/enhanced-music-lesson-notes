@@ -9,7 +9,7 @@
     "scripting"
   ],
   "host_permissions": [
-    "https://YOUR-RELAY.example.com/*"
+    "https://enhanced-music-lesson-notes-production.up.railway.app/*"
   ],
   "background": {
     "service_worker": "background.js"

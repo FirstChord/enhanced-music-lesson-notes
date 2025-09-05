@@ -303,9 +303,10 @@ class WhisperASRClient extends ASRClient {
             const result = await response.json();
             console.log('✅ Whisper transcription completed:', result.text);
             
-            // Send final result
+            // Send final result with smart formatting for questions
             if (this.finalCallback && result.text) {
-                this.finalCallback(result.text);
+                const formattedText = this.formatForQuestions(result.text);
+                this.finalCallback(formattedText);
             }
             
         } catch (error) {
@@ -313,6 +314,50 @@ class WhisperASRClient extends ASRClient {
             if (this.finalCallback) {
                 this.finalCallback('Error: Transcription failed - ' + error.message);
             }
+        }
+    }
+    
+    formatForQuestions(transcript) {
+        try {
+            // Clean up the transcript
+            const cleanText = transcript.trim();
+            if (!cleanText) return '';
+            
+            // Split into roughly equal parts (simple approach)
+            const sentences = cleanText.split(/[.!?]+/).filter(s => s.trim().length > 0);
+            const sentencesPerSection = Math.ceil(sentences.length / 3);
+            
+            const questions = [
+                "What Did We Do In The Lesson?",
+                "What Went Well Or What Was Challenging?", 
+                "What Would Be Good To Practice For Next Week?"
+            ];
+            
+            let formattedText = '';
+            
+            for (let i = 0; i < 3; i++) {
+                const startIdx = i * sentencesPerSection;
+                const endIdx = Math.min((i + 1) * sentencesPerSection, sentences.length);
+                const sectionSentences = sentences.slice(startIdx, endIdx);
+                
+                if (sectionSentences.length > 0) {
+                    formattedText += `[${questions[i]}]\n`;
+                    formattedText += sectionSentences.join('. ').trim() + '.';
+                    
+                    if (i < 2) {
+                        formattedText += '\n\n\n';
+                    } else {
+                        formattedText += '\n';
+                    }
+                }
+            }
+            
+            console.log('📝 Formatted transcript for questions:', formattedText);
+            return formattedText;
+            
+        } catch (error) {
+            console.error('❌ Error formatting transcript:', error);
+            return transcript; // Return original if formatting fails
         }
     }
     
@@ -873,6 +918,17 @@ function handlePartialTranscript(text) {
 function handleFinalTranscript(text) {
     let newText = text.trim();
     
+    // Check if this is already formatted text from Whisper (contains question headers)
+    if (newText.includes('[What Did We Do In The Lesson?]')) {
+        console.log('📝 Received formatted text from Whisper, using directly');
+        finalTranscript = newText;
+        
+        // Process results immediately for Whisper mode
+        processRecordingResults();
+        return;
+    }
+    
+    // Otherwise handle as individual transcript (Browser ASR mode)
     // Capitalize first word
     if (!finalTranscript.trim()) {
         newText = newText.charAt(0).toUpperCase() + newText.slice(1);

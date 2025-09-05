@@ -1093,8 +1093,8 @@ function handleNextQuestion() {
                 // Compile results and stop recording
                 compileQuestionResults();
                 
-                if (recognition && isRecording) {
-                    recognition.stop();
+                if (currentASRClient && isRecording) {
+                    currentASRClient.stop();
                 }
             }
         }, 1500); // 1.5 second delay for speech processing

@@ -92,12 +92,12 @@ wss.on('connection', (clientWs, request) => {
             console.log('✅ Connected to OpenAI Realtime API');
             sessionActive = true;
             
-            // Configure OpenAI session for speech-to-text
+            // Configure OpenAI session for speech-to-text (simplified)
             const sessionConfig = {
               type: 'session.update',
               session: {
                 modalities: ['text', 'audio'],
-                instructions: 'You are a transcription assistant. Convert speech to text accurately.',
+                instructions: 'You are a transcription assistant. Listen to audio and provide accurate transcriptions.',
                 voice: 'alloy',
                 input_audio_format: 'pcm16',
                 output_audio_format: 'pcm16',
@@ -108,37 +108,52 @@ wss.on('connection', (clientWs, request) => {
                   type: 'server_vad',
                   threshold: 0.5,
                   prefix_padding_ms: 300,
-                  silence_duration_ms: 1000
-                },
-                tools: [],
-                tool_choice: 'none',
-                temperature: 0.8
+                  silence_duration_ms: 1200
+                }
               }
             };
             
+            console.log('📤 Sending session config to OpenAI');
             openaiWs.send(JSON.stringify(sessionConfig));
           });
           
           openaiWs.on('message', (openaiData) => {
             try {
               const openaiMessage = JSON.parse(openaiData.toString());
+              console.log('📨 OpenAI message:', openaiMessage.type, openaiMessage);
               
               // Handle different OpenAI message types
               switch (openaiMessage.type) {
+                case 'session.created':
+                  console.log('✅ OpenAI session created');
+                  break;
+                  
+                case 'session.updated':
+                  console.log('✅ OpenAI session updated');
+                  break;
+                  
                 case 'input_audio_buffer.speech_started':
-                  // Speech started - send partial update
+                  console.log('🎤 Speech started');
                   clientWs.send(JSON.stringify({
                     type: 'partial',
-                    text: ''
+                    text: '...'
                   }));
                   break;
                   
                 case 'input_audio_buffer.speech_stopped':
-                  // Speech stopped - will get final transcript soon
+                  console.log('🛑 Speech stopped');
+                  break;
+                  
+                case 'input_audio_buffer.committed':
+                  console.log('💾 Audio buffer committed');
+                  break;
+                  
+                case 'conversation.item.created':
+                  console.log('📝 Conversation item created');
                   break;
                   
                 case 'conversation.item.input_audio_transcription.completed':
-                  // Final transcription result
+                  console.log('✅ Transcription completed:', openaiMessage.transcript);
                   if (openaiMessage.transcript) {
                     clientWs.send(JSON.stringify({
                       type: 'final',
@@ -148,15 +163,15 @@ wss.on('connection', (clientWs, request) => {
                   break;
                   
                 case 'conversation.item.input_audio_transcription.failed':
-                  console.error('Transcription failed:', openaiMessage.error);
+                  console.error('❌ Transcription failed:', openaiMessage.error);
                   clientWs.send(JSON.stringify({
                     type: 'error',
-                    message: 'Transcription failed'
+                    message: 'Transcription failed: ' + (openaiMessage.error?.message || 'Unknown error')
                   }));
                   break;
                   
                 case 'error':
-                  console.error('OpenAI API error:', openaiMessage.error);
+                  console.error('❌ OpenAI API error:', openaiMessage.error);
                   clientWs.send(JSON.stringify({
                     type: 'error',
                     message: openaiMessage.error?.message || 'OpenAI API error'
@@ -164,11 +179,14 @@ wss.on('connection', (clientWs, request) => {
                   break;
                   
                 default:
-                  // Log other message types for debugging
-                  console.log('OpenAI message type:', openaiMessage.type);
+                  console.log('🔍 Other OpenAI message:', openaiMessage.type);
               }
             } catch (error) {
-              console.error('Error processing OpenAI message:', error);
+              console.error('❌ Error processing OpenAI message:', error);
+              clientWs.send(JSON.stringify({
+                type: 'error',
+                message: 'Message processing error'
+              }));
             }
           });
           

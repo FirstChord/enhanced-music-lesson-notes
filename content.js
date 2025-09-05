@@ -17,7 +17,7 @@ let currentMode = 'question';
 let currentQuestionIndex = 0;
 let questionAnswers = {};
 let currentQuestionTranscript = '';
-let asrMode = 'cloud';
+let asrMode = 'browser'; // Temporarily force browser mode for testing
 
 const questions = [
     "What did we do in the lesson?",
@@ -1097,7 +1097,10 @@ function handleNextQuestion() {
                 compileQuestionResults();
                 
                 if (currentASRClient && isRecording) {
+                    console.log('🛑 Stopping ASR client after final question');
                     currentASRClient.stop();
+                } else {
+                    console.log('⚠️ ASR client not found or not recording when trying to stop');
                 }
             }
         }, 1500); // 1.5 second delay for speech processing

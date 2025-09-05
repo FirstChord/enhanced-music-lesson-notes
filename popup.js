@@ -70,8 +70,14 @@ class LessonNotesManager {
         this.newBtn.addEventListener('click', () => this.resetForNewRecording());
         
         // ASR mode change listeners
-        this.cloudASR.addEventListener('change', () => this.saveASRMode('cloud'));
-        this.browserASR.addEventListener('change', () => this.saveASRMode('browser'));
+        this.cloudASR.addEventListener('change', () => {
+            console.log('☁️ Cloud ASR selected');
+            this.saveASRMode('cloud');
+        });
+        this.browserASR.addEventListener('change', () => {
+            console.log('🖥️ Browser ASR selected');
+            this.saveASRMode('browser');
+        });
         
         console.log('✅ Events bound');
     }

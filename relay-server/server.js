@@ -6,10 +6,12 @@ const cors = require('cors');
 const app = express();
 const server = http.createServer(app);
 
-// Enable CORS for Chrome extension
+// Enable CORS for Chrome extension and MyMusicStaff
 app.use(cors({
-  origin: ['chrome-extension://*', 'https://*.example.com'],
-  credentials: true
+  origin: ['chrome-extension://*', 'https://*.example.com', 'https://app.mymusicstaff.com', 'https://*.mymusicstaff.com'],
+  credentials: true,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Origin']
 }));
 
 // Basic health check endpoint
@@ -19,16 +21,24 @@ app.get('/health', (req, res) => {
 
 // API key endpoint for Whisper API (secure)
 app.get('/api-key', (req, res) => {
-  // Basic origin check
+  // Basic origin check - allow Chrome extensions and MyMusicStaff
   const origin = req.get('Origin');
-  if (!origin || (!origin.startsWith('chrome-extension://') && !origin.includes('mymusicstaff.com'))) {
-    return res.status(403).json({ error: 'Forbidden' });
+  console.log('API key request from origin:', origin);
+  
+  if (!origin || 
+      (!origin.startsWith('chrome-extension://') && 
+       !origin.includes('mymusicstaff.com') && 
+       !origin.includes('localhost'))) {
+    console.log('Origin rejected:', origin);
+    return res.status(403).json({ error: 'Forbidden origin' });
   }
   
   if (!process.env.OPENAI_API_KEY) {
+    console.log('API key not configured');
     return res.status(500).json({ error: 'API key not configured' });
   }
   
+  console.log('API key provided to:', origin);
   res.json({ apiKey: process.env.OPENAI_API_KEY });
 });
 

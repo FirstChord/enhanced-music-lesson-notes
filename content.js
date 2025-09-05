@@ -1047,14 +1047,19 @@ function handleNextQuestion() {
         setTimeout(() => {
             // Save current question's answer (now should include any finalized text)
             const currentAnswer = currentQuestionTranscript.trim();
+            console.log(`🔍 Processing question ${currentQuestionIndex}, transcript: "${currentAnswer}"`);
+            
             if (currentAnswer) {
                 questionAnswers[currentQuestionIndex] = currentAnswer;
                 console.log(`💾 Saved answer for question ${currentQuestionIndex}:`, currentAnswer);
+            } else {
+                console.log(`⚠️ No answer for question ${currentQuestionIndex}, currentQuestionTranscript was: "${currentQuestionTranscript}"`);
             }
             
             // Move to next question
             currentQuestionIndex++;
             console.log(`🔢 Moved to question index: ${currentQuestionIndex}, total questions: ${questions.length}`);
+            console.log(`📋 Current questionAnswers:`, questionAnswers);
             
             if (currentQuestionIndex < questions.length) {
                 console.log(`✅ Showing question ${currentQuestionIndex + 1} of ${questions.length}`);
@@ -1062,6 +1067,7 @@ function handleNextQuestion() {
                 updateCurrentQuestion();
                 
                 // Clear current question transcript for fresh start
+                console.log(`🧹 Clearing transcript for next question. Previous: "${currentQuestionTranscript}"`);
                 currentQuestionTranscript = '';
                 
                 // Clear live transcript display

@@ -17,6 +17,21 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// API key endpoint for Whisper API (secure)
+app.get('/api-key', (req, res) => {
+  // Basic origin check
+  const origin = req.get('Origin');
+  if (!origin || (!origin.startsWith('chrome-extension://') && !origin.includes('mymusicstaff.com'))) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'API key not configured' });
+  }
+  
+  res.json({ apiKey: process.env.OPENAI_API_KEY });
+});
+
 // Create WebSocket server
 const wss = new WebSocket.Server({ 
   server,

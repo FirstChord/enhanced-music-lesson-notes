@@ -198,6 +198,148 @@ class CloudRealtimeASRClient extends ASRClient {
     }
 }
 
+// Whisper API ASR using OpenAI Whisper (not real-time)
+class WhisperASRClient extends ASRClient {
+    constructor() {
+        super();
+        this.audioContext = null;
+        this.mediaStream = null;
+        this.audioChunks = [];
+        this.mediaRecorder = null;
+        this.isRecording = false;
+    }
+    
+    async start() {
+        return new Promise(async (resolve, reject) => {
+            try {
+                console.log('🎤 Starting Whisper ASR recording');
+                
+                // Get microphone access
+                this.mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+                
+                // Set up MediaRecorder
+                this.mediaRecorder = new MediaRecorder(this.mediaStream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                
+                this.audioChunks = [];
+                this.isRecording = true;
+                
+                this.mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        this.audioChunks.push(event.data);
+                    }
+                };
+                
+                this.mediaRecorder.onstop = async () => {
+                    console.log('🎤 Whisper recording stopped, processing...');
+                    await this.processRecording();
+                };
+                
+                this.mediaRecorder.start();
+                console.log('✅ Whisper recording started');
+                resolve();
+                
+            } catch (error) {
+                console.error('❌ Whisper ASR start failed:', error);
+                reject(error);
+            }
+        });
+    }
+    
+    stop() {
+        if (this.mediaRecorder && this.isRecording) {
+            this.isRecording = false;
+            this.mediaRecorder.stop();
+        }
+        
+        if (this.mediaStream) {
+            this.mediaStream.getTracks().forEach(track => track.stop());
+            this.mediaStream = null;
+        }
+    }
+    
+    async processRecording() {
+        try {
+            if (this.audioChunks.length === 0) {
+                console.log('⚠️ No audio data to process');
+                return;
+            }
+            
+            // Create audio blob
+            const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm;codecs=opus' });
+            console.log('📦 Audio blob created, size:', audioBlob.size, 'bytes');
+            
+            // Send partial update
+            if (this.partialCallback) {
+                this.partialCallback('⏳ Processing transcription...');
+            }
+            
+            // Send to Whisper API
+            const formData = new FormData();
+            formData.append('file', audioBlob, 'audio.webm');
+            formData.append('model', 'whisper-1');
+            formData.append('response_format', 'json');
+            
+            const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${await this.getAPIKey()}`
+                },
+                body: formData
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Whisper API error: ${response.status} ${response.statusText}`);
+            }
+            
+            const result = await response.json();
+            console.log('✅ Whisper transcription completed:', result.text);
+            
+            // Send final result
+            if (this.finalCallback && result.text) {
+                this.finalCallback(result.text);
+            }
+            
+        } catch (error) {
+            console.error('❌ Whisper processing failed:', error);
+            if (this.finalCallback) {
+                this.finalCallback('Error: Transcription failed - ' + error.message);
+            }
+        }
+    }
+    
+    async getAPIKey() {
+        try {
+            // Get API key from relay server to keep it secure
+            const response = await fetch('https://enhanced-music-lesson-notes-production.up.railway.app/api-key', {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error('Failed to get API key from relay server');
+            }
+            
+            const data = await response.json();
+            return data.apiKey;
+            
+        } catch (error) {
+            console.error('❌ Failed to get API key:', error);
+            throw new Error('Could not retrieve API key for Whisper transcription');
+        }
+    }
+}
+
 // Browser-based ASR using existing webkitSpeechRecognition
 class BrowserASRClient extends ASRClient {
     constructor() {
@@ -686,8 +828,8 @@ function updateCurrentQuestion() {
 function initializeASRClient() {
     try {
         if (asrMode === 'cloud') {
-            currentASRClient = new CloudRealtimeASRClient();
-            console.log('✅ Initialized Cloud Realtime ASR client');
+            currentASRClient = new WhisperASRClient();
+            console.log('✅ Initialized Whisper ASR client');
         } else {
             currentASRClient = new BrowserASRClient();
             console.log('✅ Initialized Browser ASR client');

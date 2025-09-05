@@ -267,7 +267,7 @@ class LessonNotesManager {
             console.log('✅ Saved ASR mode:', mode);
             
             // Update UI to show current selection
-            this.showStatus(`ASR mode set to: ${mode === 'cloud' ? '☁️ Cloud' : '🖥️ Browser'}`, 'info');
+            this.showStatus(`ASR mode set to: ${mode === 'cloud' ? '☁️ Whisper (Professional)' : '🖥️ Browser (Instant)'}`, 'info');
         } catch (error) {
             console.error('❌ Failed to save ASR mode:', error);
         }

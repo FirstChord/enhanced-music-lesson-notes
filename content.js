@@ -19,6 +19,29 @@ let questionAnswers = {};
 let currentQuestionTranscript = '';
 let asrMode = 'cloud';
 
+// Fun processing messages for Whisper transcription
+const funProcessingMessages = [
+    "🐺 A pack of wolves are raising your notes...",
+    "🍳 Making a note omelette...",
+    "📝 Taking note of your notes",
+    "🎭 Dramatic",
+    "🔮 Consulting the crystal ball of transcription...",
+    "🚀 Launching words into orbit...",
+    "🧙‍♂️ Casting spelling spells...",
+    "🎪 Training circus words to perform...",
+    "🍕 Adding extra cheese to your notes...",
+    "🦄 Unicorns are polishing your words...",
+    "Walking 500 miles...",
+    "Processing how incredibly good your notes are"
+
+];
+
+// Function to get a random fun processing message
+function getRandomProcessingMessage() {
+    const randomIndex = Math.floor(Math.random() * funProcessingMessages.length);
+    return funProcessingMessages[randomIndex];
+}
+
 const questions = [
     "What did we do in the lesson?",
     "What went well or what was challenging?",
@@ -198,7 +221,7 @@ class CloudRealtimeASRClient extends ASRClient {
     }
 }
 
-// Whisper API ASR using OpenAI Whisper (not real-time)
+// Whisper API ASR using OpenAI Whisper (segments per question)
 class WhisperASRClient extends ASRClient {
     constructor() {
         super();
@@ -207,6 +230,7 @@ class WhisperASRClient extends ASRClient {
         this.audioChunks = [];
         this.mediaRecorder = null;
         this.isRecording = false;
+        this.currentSegmentStart = 0;
     }
     
     async start() {
@@ -231,20 +255,19 @@ class WhisperASRClient extends ASRClient {
                 
                 this.audioChunks = [];
                 this.isRecording = true;
+                this.currentSegmentStart = 0;
                 
                 this.mediaRecorder.ondataavailable = (event) => {
+                    console.log('📊 Audio data available, size:', event.data.size);
                     if (event.data.size > 0) {
                         this.audioChunks.push(event.data);
+                        console.log('📦 Audio chunk added, total chunks:', this.audioChunks.length);
                     }
                 };
                 
-                this.mediaRecorder.onstop = async () => {
-                    console.log('🎤 Whisper recording stopped, processing...');
-                    await this.processRecording();
-                };
-                
-                this.mediaRecorder.start();
-                console.log('✅ Whisper recording started');
+                // Start recording with timeslice to ensure data collection
+                this.mediaRecorder.start(1000); // Capture data every 1 second
+                console.log('✅ Whisper recording started with 1s timeslice');
                 resolve();
                 
             } catch (error) {
@@ -254,32 +277,45 @@ class WhisperASRClient extends ASRClient {
         });
     }
     
-    stop() {
-        if (this.mediaRecorder && this.isRecording) {
-            this.isRecording = false;
-            this.mediaRecorder.stop();
-        }
-        
-        if (this.mediaStream) {
-            this.mediaStream.getTracks().forEach(track => track.stop());
-            this.mediaStream = null;
-        }
-    }
-    
-    async processRecording() {
+    // Process current segment when user advances to next question
+    async processCurrentSegment() {
         try {
             if (this.audioChunks.length === 0) {
-                console.log('⚠️ No audio data to process');
-                return;
+                console.log('⚠️ No audio data collected yet');
+                return '';
             }
             
-            // Create audio blob
-            const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm;codecs=opus' });
-            console.log('📦 Audio blob created, size:', audioBlob.size, 'bytes');
+            // Stop recording to capture current data
+            if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+                console.log('⏸️ Stopping MediaRecorder to capture segment');
+                this.mediaRecorder.stop();
+                
+                // Wait for the stop event to process audio chunks
+                await new Promise((resolve) => {
+                    const originalStop = this.mediaRecorder.onstop;
+                    this.mediaRecorder.onstop = () => {
+                        console.log('✅ MediaRecorder stopped, audio chunks ready');
+                        resolve();
+                    };
+                });
+            }
             
-            // Send partial update
+            if (this.audioChunks.length === 0) {
+                console.log('⚠️ No audio chunks after stopping recorder');
+                return '';
+            }
+            
+            // Use all collected chunks for this segment
+            const segmentChunks = [...this.audioChunks];
+            console.log(`📦 Processing ${segmentChunks.length} audio chunks for segment`);
+            
+            // Create audio blob for this segment
+            const audioBlob = new Blob(segmentChunks, { type: 'audio/webm;codecs=opus' });
+            console.log('📦 Audio segment created, size:', audioBlob.size, 'bytes');
+            
+            // Send partial update with fun message
             if (this.partialCallback) {
-                this.partialCallback('⏳ Processing transcription...');
+                this.partialCallback(getRandomProcessingMessage());
             }
             
             // Send to Whisper API
@@ -301,63 +337,42 @@ class WhisperASRClient extends ASRClient {
             }
             
             const result = await response.json();
-            console.log('✅ Whisper transcription completed:', result.text);
+            console.log('✅ Whisper segment transcription completed:', result.text);
             
-            // Send final result with smart formatting for questions
-            if (this.finalCallback && result.text) {
-                const formattedText = this.formatForQuestions(result.text);
-                this.finalCallback(formattedText);
+            // Clear processed chunks and restart recording for next question
+            this.audioChunks = [];
+            if (this.mediaStream) {
+                console.log('🔄 Restarting MediaRecorder for next segment');
+                this.mediaRecorder = new MediaRecorder(this.mediaStream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                
+                this.mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        this.audioChunks.push(event.data);
+                    }
+                };
+                
+                this.mediaRecorder.start(1000); // Continue with timeslice
             }
+            
+            return result.text.trim();
             
         } catch (error) {
-            console.error('❌ Whisper processing failed:', error);
-            if (this.finalCallback) {
-                this.finalCallback('Error: Transcription failed - ' + error.message);
-            }
+            console.error('❌ Whisper segment processing failed:', error);
+            return 'Error: Transcription failed - ' + error.message;
         }
     }
     
-    formatForQuestions(transcript) {
-        try {
-            // Clean up the transcript
-            const cleanText = transcript.trim();
-            if (!cleanText) return '';
-            
-            // Split into roughly equal parts (simple approach)
-            const sentences = cleanText.split(/[.!?]+/).filter(s => s.trim().length > 0);
-            const sentencesPerSection = Math.ceil(sentences.length / 3);
-            
-            const questions = [
-                "What Did We Do In The Lesson?",
-                "What Went Well Or What Was Challenging?", 
-                "What Would Be Good To Practice For Next Week?"
-            ];
-            
-            let formattedText = '';
-            
-            for (let i = 0; i < 3; i++) {
-                const startIdx = i * sentencesPerSection;
-                const endIdx = Math.min((i + 1) * sentencesPerSection, sentences.length);
-                const sectionSentences = sentences.slice(startIdx, endIdx);
-                
-                if (sectionSentences.length > 0) {
-                    formattedText += `[${questions[i]}]\n`;
-                    formattedText += sectionSentences.join('. ').trim() + '.';
-                    
-                    if (i < 2) {
-                        formattedText += '\n\n\n';
-                    } else {
-                        formattedText += '\n';
-                    }
-                }
-            }
-            
-            console.log('📝 Formatted transcript for questions:', formattedText);
-            return formattedText;
-            
-        } catch (error) {
-            console.error('❌ Error formatting transcript:', error);
-            return transcript; // Return original if formatting fails
+    stop() {
+        if (this.mediaRecorder && this.isRecording) {
+            this.isRecording = false;
+            this.mediaRecorder.stop();
+        }
+        
+        if (this.mediaStream) {
+            this.mediaStream.getTracks().forEach(track => track.stop());
+            this.mediaStream = null;
         }
     }
     
@@ -773,6 +788,7 @@ function setupEventListeners() {
         // Close button
         document.getElementById('closeRecorder').onclick = () => {
             handleStopRecording();
+            clearAllCachedData();
         };
         
         // Copy button
@@ -908,8 +924,16 @@ function handlePartialTranscript(text) {
     // Update timing
     window.lastSpeechTime = Date.now();
     
-    // Update live transcript display
-    updateLiveTranscript(text);
+    // Check if this is a fun processing message
+    const isFunMessage = funProcessingMessages.some(msg => text.includes(msg.replace(/[🐺🍳📝🎭🔮🚀🧙‍♂️🎪🍕🦄]/g, '').trim()));
+    
+    if (isFunMessage || text.includes('Walking') || text.includes('Processing how')) {
+        // Show fun processing message with special styling
+        showFunProcessingMessage(text);
+    } else {
+        // Update live transcript display normally
+        updateLiveTranscript(text);
+    }
 }
 
 /**
@@ -918,39 +942,32 @@ function handlePartialTranscript(text) {
 function handleFinalTranscript(text) {
     let newText = text.trim();
     
-    // Check if this is already formatted text from Whisper (contains question headers)
-    if (newText.includes('[What Did We Do In The Lesson?]')) {
-        console.log('📝 Received formatted text from Whisper, using directly');
-        finalTranscript = newText;
-        
-        // Process results immediately for Whisper mode
-        processRecordingResults();
-        return;
-    }
-    
-    // Otherwise handle as individual transcript (Browser ASR mode)
-    // Capitalize first word
-    if (!finalTranscript.trim()) {
-        newText = newText.charAt(0).toUpperCase() + newText.slice(1);
-    } else if (finalTranscript.trim().endsWith('.')) {
-        newText = newText.charAt(0).toUpperCase() + newText.slice(1);
-    }
-    
-    finalTranscript += newText + ' ';
-    
-    // Add to current question transcript in question mode
-    if (currentMode === 'question') {
-        if (!currentQuestionTranscript.trim()) {
+    // For Whisper mode, text processing is handled in handleNextQuestion()
+    // This handles the continuous Browser ASR mode
+    if (asrMode === 'browser') {
+        // Capitalize first word
+        if (!finalTranscript.trim()) {
+            newText = newText.charAt(0).toUpperCase() + newText.slice(1);
+        } else if (finalTranscript.trim().endsWith('.')) {
             newText = newText.charAt(0).toUpperCase() + newText.slice(1);
         }
-        currentQuestionTranscript += newText + ' ';
+        
+        finalTranscript += newText + ' ';
+        
+        // Add to current question transcript in question mode
+        if (currentMode === 'question') {
+            if (!currentQuestionTranscript.trim()) {
+                newText = newText.charAt(0).toUpperCase() + newText.slice(1);
+            }
+            currentQuestionTranscript += newText + ' ';
+        }
+        
+        // Update timing
+        window.lastSpeechTime = Date.now();
+        
+        // Update live transcript display
+        updateLiveTranscript('');
     }
-    
-    // Update timing
-    window.lastSpeechTime = Date.now();
-    
-    // Update live transcript display
-    updateLiveTranscript('');
 }
 
 /**
@@ -971,7 +988,7 @@ function updateRecordingUI(recording) {
             recordingIndicator.classList.remove('error');
         }
         if (micStatus) {
-            micStatus.textContent = `Recording... (${asrMode === 'cloud' ? '☁️ Cloud' : '🖥️ Browser'} ASR)`;
+            micStatus.textContent = 'Recording notes...';
             micStatus.style.color = '#4CAF50';
         }
         
@@ -1082,6 +1099,29 @@ function startPauseDetection() {
             }
         }
     }, 200);
+}
+
+/**
+ * Show fun processing message with subtle animation
+ */
+function showFunProcessingMessage(message) {
+    const liveTranscript = document.getElementById('liveTranscript');
+    if (!liveTranscript) return;
+    
+    // Create subtly animated message
+    liveTranscript.innerHTML = `
+        <div style="animation: gentleWobble 1.5s ease-in-out infinite;">
+            <strong>Processing:</strong> ${message}
+        </div>
+        <style>
+            @keyframes gentleWobble {
+                0%, 100% { transform: translateY(0px); }
+                50% { transform: translateY(-2px); }
+            }
+        </style>
+    `;
+    
+    liveTranscript.scrollTop = liveTranscript.scrollHeight;
 }
 
 /**
@@ -1229,7 +1269,7 @@ function stopSpeechRecognition() {
 /**
  * Handle next question button click
  */
-function handleNextQuestion() {
+async function handleNextQuestion() {
     try {
         const nextQuestionBtn = document.getElementById('nextQuestion');
         
@@ -1241,9 +1281,26 @@ function handleNextQuestion() {
             console.log('🔄 Button set to processing state');
         }
         
-        // Give speech recognition time to finalize any "Live:" text
-        setTimeout(() => {
-            // Save current question's answer (now should include any finalized text)
+        // For Whisper: Process current segment immediately
+        if (asrMode === 'cloud' && currentASRClient instanceof WhisperASRClient) {
+            console.log('☁️ Processing Whisper segment for current question');
+            const segmentText = await currentASRClient.processCurrentSegment();
+            
+            if (segmentText) {
+                questionAnswers[currentQuestionIndex] = segmentText;
+                console.log(`💾 Saved Whisper answer for question ${currentQuestionIndex}:`, segmentText);
+                
+                // Update live display with processed text
+                const liveDiv = document.getElementById('liveTranscript');
+                if (liveDiv) {
+                    liveDiv.innerHTML = `<strong>Processed:</strong> ${segmentText}`;
+                }
+            }
+        } else {
+            // For browser ASR: Use existing transcript logic with delay
+            await new Promise(resolve => setTimeout(resolve, 1500)); // Shorter delay for browser ASR
+            
+            // Save current question's answer
             let currentAnswer = currentQuestionTranscript.trim();
             
             // If no current question transcript, try using the global finalTranscript
@@ -1252,76 +1309,62 @@ function handleNextQuestion() {
                 currentAnswer = finalTranscript.trim();
             }
             
-            console.log(`🔍 Processing question ${currentQuestionIndex}, transcript: "${currentAnswer}"`);
-            console.log(`🔍 currentQuestionTranscript: "${currentQuestionTranscript}"`);
-            console.log(`🔍 finalTranscript: "${finalTranscript}"`);
-            
             if (currentAnswer) {
                 questionAnswers[currentQuestionIndex] = currentAnswer;
-                console.log(`💾 Saved answer for question ${currentQuestionIndex}:`, currentAnswer);
-            } else {
-                console.log(`⚠️ No answer for question ${currentQuestionIndex}, both transcripts were empty`);
+                console.log(`💾 Saved browser ASR answer for question ${currentQuestionIndex}:`, currentAnswer);
+            }
+        }
+        
+        // Move to next question
+        currentQuestionIndex++;
+        console.log(`🔢 Moved to question index: ${currentQuestionIndex}, total questions: ${questions.length}`);
+        
+        if (currentQuestionIndex < questions.length) {
+            console.log(`✅ Showing question ${currentQuestionIndex + 1} of ${questions.length}`);
+            // Show next question
+            updateCurrentQuestion();
+            
+            // Clear transcripts for fresh start
+            currentQuestionTranscript = '';
+            finalTranscript = '';
+            
+            // Clear live transcript display
+            const liveDiv = document.getElementById('liveTranscript');
+            if (liveDiv) {
+                liveDiv.innerHTML = '<strong>Live:</strong> <br><strong>Current Answer:</strong> ';
             }
             
-            // Move to next question
-            currentQuestionIndex++;
-            console.log(`🔢 Moved to question index: ${currentQuestionIndex}, total questions: ${questions.length}`);
-            console.log(`📋 Current questionAnswers:`, questionAnswers);
-            
-            if (currentQuestionIndex < questions.length) {
-                console.log(`✅ Showing question ${currentQuestionIndex + 1} of ${questions.length}`);
-                // Show next question
-                updateCurrentQuestion();
-                
-                // Clear current question transcript for fresh start
-                console.log(`🧹 Clearing transcripts for next question. Previous currentQuestionTranscript: "${currentQuestionTranscript}"`);
-                currentQuestionTranscript = '';
-                finalTranscript = ''; // Also clear global transcript to prevent bleed-over
-                
-                // Clear live transcript display
-                const liveDiv = document.getElementById('liveTranscript');
-                if (liveDiv) {
-                    liveDiv.innerHTML = '<strong>Live:</strong> <br><strong>Current Answer:</strong> ';
-                }
-                
-                // Update status and button
-                const status = document.getElementById('recorderStatus');
-                
-                if (status) {
-                    status.innerHTML = `🎤 Recording: ${questions[currentQuestionIndex]}`;
-                }
-                
-                // Re-enable button with next question text
-                if (nextQuestionBtn) {
-                    nextQuestionBtn.disabled = false;
-                    nextQuestionBtn.style.background = '#007cba';
-                    nextQuestionBtn.textContent = currentQuestionIndex === questions.length - 1 ? 'Finish →' : 'Next Question →';
-                    console.log('✅ Button re-enabled for next question');
-                }
-            } else {
-                console.log(`🏁 Finished all questions. Current index: ${currentQuestionIndex}, Questions length: ${questions.length}`);
-                // Save final answer
-                const finalAnswer = currentQuestionTranscript.trim() || finalTranscript.trim();
-                if (finalAnswer) {
-                    questionAnswers[currentQuestionIndex] = finalAnswer;
-                    console.log(`💾 Saved final answer:`, finalAnswer);
-                }
-                
-                // Compile results and stop recording
-                compileQuestionResults();
-                
-                // Process and send results to popup
-                console.log('📤 Processing results for popup display');
-                processRecordingResults();
-                
-                if (currentASRClient && isRecording) {
-                    console.log('🛑 Stopping ASR client after final question');
-                    currentASRClient.stop();
-                } else {
-                    console.log('⚠️ ASR client not found or not recording when trying to stop');
-                }
+            // Update status and button
+            const status = document.getElementById('recorderStatus');
+            if (status) {
+                status.innerHTML = `🎤 Recording: ${questions[currentQuestionIndex]}`;
             }
-        }, 3000); // 3 second delay to ensure OpenAI processing completes
+            
+            // Re-enable button with next question text
+            if (nextQuestionBtn) {
+                nextQuestionBtn.disabled = false;
+                nextQuestionBtn.style.background = '#007cba';
+                nextQuestionBtn.textContent = currentQuestionIndex === questions.length - 1 ? 'Finish →' : 'Next Question →';
+                console.log('✅ Button re-enabled for next question');
+            }
+        } else {
+            console.log(`🏁 Finished all questions.`);
+            
+            // Compile results and stop recording
+            compileQuestionResults();
+            
+            // Stop recording immediately after final question
+            if (currentASRClient && isRecording) {
+                console.log('🛑 Stopping ASR client after final question');
+                currentASRClient.stop();
+                isRecording = false;
+                updateRecordingUI(false);
+            }
+            
+            // Process and send results to popup
+            console.log('📤 Processing results for popup display');
+            processRecordingResults();
+        }
         
     } catch (error) {
         console.error('❌ Failed to handle next question:', error);
@@ -1534,5 +1577,50 @@ function handleCopyResults() {
         console.error('❌ Failed to copy results:', error);
     }
 }
+
+/**
+ * Clear all cached recording data for fresh start
+ */
+function clearAllCachedData() {
+    console.log('🧹 Clearing all cached recording data');
+    
+    // Reset all global variables
+    finalTranscript = '';
+    rawText = '';
+    enhancedText = '';
+    currentQuestionTranscript = '';
+    questionAnswers = {};
+    currentQuestionIndex = 0;
+    
+    // Clear any stored results
+    if (window.recordingResults) {
+        delete window.recordingResults;
+    }
+    
+    // Clear any timers
+    if (pauseCheckInterval) {
+        clearInterval(pauseCheckInterval);
+        pauseCheckInterval = null;
+    }
+    
+    console.log('✅ All cached data cleared - ready for fresh start');
+}
+
+// Add page cleanup listeners for fresh start
+window.addEventListener('beforeunload', () => {
+    console.log('🔄 Page unloading - cleaning up recording data');
+    clearAllCachedData();
+    if (currentASRClient && isRecording) {
+        currentASRClient.stop();
+    }
+});
+
+// Also clear when the page becomes hidden (user switches tabs/closes)
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        console.log('👁️ Page hidden - cleaning up for fresh start');
+        clearAllCachedData();
+    }
+});
 
 console.log('✅ Enhanced content script fully loaded and ready');

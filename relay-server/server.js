@@ -8,16 +8,26 @@ const server = http.createServer(app);
 
 // Enable CORS for Chrome extension, MyMusicStaff, and Firebase hosting
 app.use(cors({
-  origin: [
-    'chrome-extension://*',
-    'https://*.example.com',
-    'https://app.mymusicstaff.com',
-    'https://*.mymusicstaff.com',
-    'https://*.firebaseapp.com',
-    'https://*.web.app',
-    'http://localhost:8000',
-    'http://127.0.0.1:8000'
-  ],
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+
+    // Check if origin is allowed
+    if (
+      origin.startsWith('chrome-extension://') ||
+      origin.startsWith('moz-extension://') ||
+      origin.includes('mymusicstaff.com') ||
+      origin.includes('firebaseapp.com') ||
+      origin.includes('web.app') ||
+      origin.includes('localhost') ||
+      origin.includes('127.0.0.1')
+    ) {
+      callback(null, true);
+    } else {
+      console.log('CORS rejected origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Origin']
@@ -30,27 +40,16 @@ app.get('/health', (req, res) => {
 
 // API key endpoint for Whisper API (secure)
 app.get('/api-key', (req, res) => {
-  // Basic origin check - allow Chrome extensions, MyMusicStaff, and Firebase hosting
+  // CORS middleware already handles origin validation
   const origin = req.get('Origin');
-  console.log('API key request from origin:', origin);
-
-  if (!origin ||
-      (!origin.startsWith('chrome-extension://') &&
-       !origin.includes('mymusicstaff.com') &&
-       !origin.includes('localhost') &&
-       !origin.includes('127.0.0.1') &&
-       !origin.includes('firebaseapp.com') &&
-       !origin.includes('web.app'))) {
-    console.log('Origin rejected:', origin);
-    return res.status(403).json({ error: 'Forbidden origin' });
-  }
+  console.log('✅ API key request from origin:', origin);
 
   if (!process.env.OPENAI_API_KEY) {
-    console.log('API key not configured');
+    console.log('❌ API key not configured');
     return res.status(500).json({ error: 'API key not configured' });
   }
 
-  console.log('API key provided to:', origin);
+  console.log('🔑 API key provided to:', origin);
   res.json({ apiKey: process.env.OPENAI_API_KEY });
 });
 
